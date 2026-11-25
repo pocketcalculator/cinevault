@@ -32,9 +32,13 @@ export function errorResponse(error: unknown) {
   );
 }
 
-export function requireSameOrigin(request: Request) {
+export function requireSameOrigin(request: Request, message = "Catalog changes must come from this app.") {
   const origin = request.headers.get("origin");
-  if (!origin || origin !== new URL(request.url).origin) {
-    throw new AppError("Catalog changes must come from this app.", 403);
+  const url = new URL(request.url);
+  // Next.js can normalize request.url to localhost even when the browser uses 127.0.0.1.
+  const host = request.headers.get("host");
+  const expectedOrigin = host ? new URL(`${url.protocol}//${host}`).origin : url.origin;
+  if (!origin || origin !== expectedOrigin) {
+    throw new AppError(message, 403);
   }
 }

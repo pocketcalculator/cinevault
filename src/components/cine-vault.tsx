@@ -108,6 +108,15 @@ export default function CineVault() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [view, setView] = useState<"lookup" | "catalog">("lookup");
+  const [cover, setCover] = useState<File | null>(null);
+  const [coverPreview, setCoverPreview] = useState("");
+  const [identifying, setIdentifying] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (coverPreview) URL.revokeObjectURL(coverPreview);
+    };
+  }, [coverPreview]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -139,6 +148,17 @@ export default function CineVault() {
     }
   }
 
+  async function findMatches(query: string) {
+    const data = await api<{ movies: MovieMatch[] }>(
+      `/api/movies?title=${encodeURIComponent(query.trim())}`,
+    );
+    setMatches(data.movies);
+    if (data.movies.length === 1) {
+      const details = await api<{ movie: Movie }>(`/api/movies/${data.movies[0].tmdbId}`);
+      setMovie(details.movie);
+    }
+  }
+
   async function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
@@ -149,17 +169,65 @@ export default function CineVault() {
     setMatches(null);
     setView("lookup");
     try {
-      const data = await api<{ movies: MovieMatch[] }>(
-        `/api/movies?title=${encodeURIComponent(title.trim())}`,
-      );
-      setMatches(data.movies);
-      if (data.movies.length === 1) {
-        const details = await api<{ movie: Movie }>(`/api/movies/${data.movies[0].tmdbId}`);
-        setMovie(details.movie);
-      }
+      await findMatches(title);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Could not search for films.");
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function identify(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!cover || busy) return;
+    setBusy(true);
+    setIdentifying(true);
+    setError("");
+    setNotice("");
+    setMovie(null);
+    setMatches(null);
+    setView("lookup");
+    try {
+      let bitmap: ImageBitmap;
+      try {
+        bitmap = await createImageBitmap(cover);
+      } catch {
+        throw new Error("This photo could not be opened. Choose a valid JPEG, PNG, or WebP image.");
+      }
+      let image: Blob;
+      try {
+        const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("Your browser could not prepare this photo. Try another browser or search by title.");
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        image = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob(
+            (blob) => blob ? resolve(blob) : reject(new Error("This photo could not be prepared. Try another image.")),
+            "image/jpeg",
+            0.9,
+          );
+        });
+      } finally {
+        bitmap.close();
+      }
+      const data = await api<{ title: string }>("/api/movies/identify", {
+        method: "POST",
+        headers: { "Content-Type": image.type },
+        body: image,
+      });
+      setTitle(data.title);
+      setNotice(`AI suggested "${data.title}". Confirm the correct film and release year before adding it.`);
+      setIdentifying(false);
+      await findMatches(data.title);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Could not identify this cover. Try another photo or search by title.");
+    } finally {
+      setIdentifying(false);
       setBusy(false);
     }
   }
@@ -249,6 +317,42 @@ export default function CineVault() {
             </div>
             <p className="small muted">Search by title, then confirm the correct film and release year.</p>
           </form>
+          <form className="search-form cover-form" onSubmit={identify}>
+            <label htmlFor="cover-photo">Or identify a DVD / Blu-ray cover</label>
+            <div className="search-controls">
+              <input
+                id="cover-photo"
+                name="cover"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                aria-describedby="cover-help"
+                disabled={busy}
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setError("");
+                  setNotice("");
+                  if (file && (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || !file.size || file.size > 5 * 1024 * 1024)) {
+                    setCover(null);
+                    setCoverPreview("");
+                    event.target.value = "";
+                    setError("Choose a nonempty JPEG, PNG, or WebP photo, 5 MB or smaller. Convert HEIC images first.");
+                    return;
+                  }
+                  setCover(file);
+                  setCoverPreview(file ? URL.createObjectURL(file) : "");
+                }}
+              />
+              <button type="submit" disabled={busy || !cover}>
+                {identifying ? "Identifying..." : "Identify cover"}
+              </button>
+            </div>
+            <p id="cover-help" className="small muted">
+              One front cover per photo. JPEG, PNG, or WebP, up to 5 MB. Sent to Azure AI only when you select Identify cover; not saved in your catalog. Azure service retention policies apply. Each identification uses paid AI.
+            </p>
+            {coverPreview && (
+              <Image className="cover-preview" src={coverPreview} alt="Selected cover photo preview" width={180} height={240} unoptimized />
+            )}
+          </form>
         </section>
         <nav className="tabs" aria-label="Library views">
           <button className={view === "lookup" ? "active" : ""} onClick={() => setView("lookup")}>Film lookup</button>
@@ -259,7 +363,7 @@ export default function CineVault() {
         <div aria-live="polite" aria-atomic="true">
           {error && <p className="notice error" role="alert">{error}</p>}
           {notice && <p className="notice success">{notice}</p>}
-          {busy && <p className="working" role="status">Retrieving film information...</p>}
+          {busy && <p className="working" role="status">{identifying ? "Identifying the movie on your cover..." : "Retrieving film information..."}</p>}
         </div>
         {view === "lookup" ? (
           <div className="lookup-grid">
@@ -269,7 +373,7 @@ export default function CineVault() {
               {matches === null ? (
                 <div className="empty-state">
                   <span className="disc" aria-hidden="true" />
-                  <p>Your next catalog entry<br />starts with a title.</p>
+                  <p>Your next catalog entry<br />starts with a title or cover photo.</p>
                 </div>
               ) : matches.length === 0 ? (
                 <p className="notice">No matching films were found. Check the spelling or try the original title.</p>

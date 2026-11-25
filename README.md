@@ -4,6 +4,8 @@ A local-first web app for cataloging a DVD library, built with Next.js, TypeScri
 
 Search by film title, select the correct film and release year, review its details, and add it to your catalog. Saved films persist in Azure; expand an entry to view its metadata, or remove it with confirmation. Duplicate additions keep the existing entry.
 
+You can also upload a DVD or Blu-ray front-cover photo. Azure AI suggests a title and the app runs the same TMDB lookup; review the film and release year before saving. AI never supplies the saved metadata or automatically adds a film.
+
 ## Run locally
 
 Requires Node.js 22.13+ (for the database check) and npm.
@@ -44,11 +46,29 @@ Without a TMDB token, the app still opens and your saved catalog works, but look
 | Awards | Wikidata recorded wins for Academy Award for Best Picture, BAFTA Best Film, Palme d'Or, Golden Lion, Golden Bear |
 | Plot | First TMDB overview sentence; shortened at a word boundary to 29 words when necessary, with an ellipsis and visible notice |
 
-Plot shortening is deterministic extraction, **not** AI rewriting. It may end mid-thought on long source sentences. No paid AI service is used.
+Plot shortening is deterministic extraction, **not** AI rewriting. It may end mid-thought on long source sentences. Title search and metadata retrieval do not use paid AI; optional cover identification does.
 
 Award checks use the film's Wikidata ID, or match its TMDB/IMDb ID when missing. Only **award received** (`P166`) counts; nominations do not. Edition-specific prizes are resolved through instance/subclass links. "No win recorded" is not proof of a loss: Wikidata can be incomplete. Outages, missing film records, or incomplete classification show **Unverified**, not a false negative. This is a catalog aid, not an authoritative awards database.
 
 Search displays TMDB's first page of closest matches; refine the title if needed. Provider responses are cached for up to 24 hours. Saved entries are snapshots and are not automatically refreshed.
+
+## Optional Azure cover identification
+
+Deploy a vision-capable Azure OpenAI model, such as GPT-4.1 mini, in Microsoft Foundry using Standard pay-as-you-go pricing, not provisioned throughput. Add these server-only settings to `.env.local`:
+
+```dotenv
+AZURE_OPENAI_ENDPOINT=https://your-resource.services.ai.azure.com/openai/v1/
+AZURE_OPENAI_API_KEY=your-key
+AZURE_OPENAI_DEPLOYMENT_NAME=your-deployment-name
+```
+
+Use the OpenAI **base URL** ending in `/openai/v1/`, not the project endpoint or the full `/responses` URL. Azure endpoints ending in `.openai.azure.com` are also supported. Use the actual deployment name, which may differ from the model name. Restart the app after changing environment settings. Without this configuration, manual title search and the catalog still work.
+
+Choose one JPEG, PNG, or WebP photo up to 5 MB and select **Identify cover**. Convert HEIC files first. The browser resizes the photo to at most 1,600 pixels on its longest side and re-encodes it as JPEG, removing original metadata before sending it. The server independently checks upload size and image format. Clear, tightly cropped front covers work best; glare, remakes, localized artwork, and collections can be ambiguous. Edit the suggested title or use manual search if the correct match is missing.
+
+Photos are processed in memory, not written to disk or Cosmos DB, and are not included in application logs. Azure identification requests are not cached and use `store: false` to disable Responses API history storage. This does not disable Azure abuse-monitoring retention; see [Azure data privacy](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy). Global deployments may process images outside the resource's region.
+
+Each explicit identification sends one billable model request; the app does not automatically retry. Image input and the short response incur token charges. Check your deployment's current rates and configure budget alerts (not hard spending caps). No agents, image storage, or additional database resources are required.
 
 ## Azure database and cost
 
